@@ -78,18 +78,27 @@ dialog .btn{margin:6px 4px 0}
 #help ul{margin:0;padding-left:18px;font-size:14px;line-height:1.45}
 #help li{margin:3px 0}
 #help .ok{display:block;margin:18px auto 0}
+.modes{display:flex;justify-content:center;gap:8px;margin:10px 0}
+.modes [aria-pressed="true"]{border-color:var(--gold);color:var(--gold)}
+#daily-date{color:var(--muted);margin:0;text-align:center;font-size:13px}
+#share-daily:not([hidden]),#share-result:not([hidden]){display:inline-block;color:inherit;text-decoration:none}
 </style>
 </head>
 <body>
 <main>
 <header><div class="best" aria-label="Recorde"><svg viewBox="0 0 28 24" aria-hidden="true"><g fill="#2f4fb0" stroke="#17286b" stroke-width="1.5" stroke-linejoin="round"><path d="M2.5 20 4 8l6 5 4-9 4 9 6-5 1.5 12z"/><circle cx="4" cy="6.5" r="2"/><circle cx="14" cy="3" r="2"/><circle cx="24" cy="6.5" r="2"/></g></svg><span id="best">0</span></div><div class="top"><button class="icon" id="helpbtn" aria-label="Ajuda">?</button><button class="icon" id="mute" aria-pressed="true" aria-label="Desativar som">🔊</button></div></header>
 <h1 class="sr">Blocos Neon</h1>
+<div class="modes" role="group" aria-label="Modo de jogo">
+<button class="btn" id="classic" aria-pressed="true">Clássico</button>
+<button class="btn" id="daily" aria-pressed="false">Desafio do dia</button>
+</div>
+<p id="daily-date" hidden></p>
 <div class="hero"><div id="score">0</div><div class="combo">Combo <strong id="combo">–</strong></div></div>
 <p id="status" aria-live="polite"></p>
 <div id="board" role="grid" aria-label="Tabuleiro de oito linhas e oito colunas"></div>
 <div id="tray" aria-label="Peças disponíveis"></div>
 <div class="bar"><button class="btn" id="undo">Desfazer (3)</button><button class="btn" id="reset">Reiniciar</button></div>
-<p><button class="btn" id="install" hidden>Instalar app</button></p>
+<p><a class="btn" id="share-daily" target="_blank" rel="noopener" hidden>Compartilhar no WhatsApp</a> <button class="btn" id="install" hidden>Instalar app</button></p>
 <p class="hint">Arraste uma peça para o tabuleiro e complete linhas ou colunas. Toque em ? para ver as regras.</p>
 </main>
 <div id="ghost" hidden></div>
@@ -113,7 +122,7 @@ dialog .btn{margin:6px 4px 0}
 <ul><li>1 a 3 escolhem a peça, setas movem, Enter coloca, Z desfaz.</li></ul>
 <button class="btn ok" id="closehelp">Entendi</button>
 </dialog>
-<dialog id="end"><h2>Fim de jogo</h2><p id="result"></p><button class="btn" id="again">Jogar de novo</button><button class="btn" id="undo2">Desfazer jogada</button></dialog>
+<dialog id="end"><h2>Fim de jogo</h2><p id="result"></p><button class="btn" id="again">Jogar de novo</button><button class="btn" id="undo2">Desfazer jogada</button> <a class="btn" id="share-result" target="_blank" rel="noopener" hidden>Compartilhar no WhatsApp</a></dialog>
 <script>
 const N=8,SZ=N*N,KEY='blocos-neon-estado',BK='blocos-neon-recorde';
 const SHAPES=['x','xx','x/x','xxx','x/x/x','xx/x.','xx/.x','x./xx','.x/xx','xxxx','x/x/x/x','xx/xx',
@@ -128,13 +137,44 @@ const board=$('board'),tray=$('tray'),end=$('end'),ghost=$('ghost'),resetBtn=$('
 const tiles=Array.from({length:SZ},(_,i)=>{const t=document.createElement('button');t.className='cell';t.dataset.i=i;t.tabIndex=i?-1:0;
  t.setAttribute('aria-label',`Linha ${1+(i/N|0)}, coluna ${1+i%N}`);board.append(t);return t});
 let grid,pieces,sel=-1,score=0,streak=0,comboGraceUsed=false,undos=3,snap=null,busy=false,drag=null,record=false,best=0,rt;
-try{best=Number(localStorage.getItem(BK))||0}catch{}
+let dailyDate='',dailyRound=0;
+const today=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'America/Sao_Paulo'}).format(new Date());
+const dateLabel=date=>date.split('-').reverse().join('/');
+const stateKey=()=>dailyDate?KEY+'-dia-'+dailyDate:KEY;
+const bestKey=()=>dailyDate?BK+'-dia-'+dailyDate:BK;
+function dailyRandom(round){
+ let seed=(Math.imul(Number(dailyDate.replace(/-/g,'')),2654435761)^Math.imul(round,2246822519))>>>0;
+ return max=>{
+  seed=(Math.imul(seed,1664525)+1013904223)>>>0;
+  return Math.floor(seed/4294967296*max);
+ };
+}
+function dailyGrid(){
+ const pick=dailyRandom(0),cells=Array(SZ).fill(null);
+ for(let y=N-2;y<N;y++){
+  const hole=pick(N-2);
+  for(let x=0;x<N;x++)if(x<hole||x>=hole+3)cells[y*N+x]=colors[pick(colors.length)];
+ }
+ return cells;
+}
+function shareDaily(scoreToShare){
+ const label=dateLabel(dailyDate);
+ const url=new URL(location.href);
+ url.search='';
+ url.hash='desafio';
+ const invite=url.protocol.startsWith('http')?' Jogue também: '+url.href:'';
+ return 'https://wa.me/?text='+encodeURIComponent(`Fiz ${scoreToShare} pontos no Desafio do Dia (${label}) do Blocos Neon!`+invite);
+}
 const say=t=>{$('status').textContent=t};
 const buzz=p=>{try{navigator.vibrate&&navigator.vibrate(p)}catch{}};
 const mk=(s,c)=>({s,color:c||colors[Math.random()*colors.length|0],...SHAPES[s]});
 const fits=(cells,x,y)=>cells.every(([dx,dy])=>{const X=x+dx,Y=y+dy;return X>=0&&X<N&&Y>=0&&Y<N&&!grid[Y*N+X]});
 function anyFit(cells){for(let y=0;y<N;y++)for(let x=0;x<N;x++)if(fits(cells,x,y))return true;return false}
 function deal(){
+ if(dailyDate){
+  const pick=dailyRandom(++dailyRound);
+  return [3,11,0].map(fallback=>mk(dailyRound===1?fallback:pick(SHAPES.length),colors[pick(colors.length)]));
+ }
  const f=grid.filter(Boolean).length/SZ,w=SHAPES.map(s=>Math.exp(-f*s.cells.length*.28)),tot=w.reduce((a,b)=>a+b);
  const pick=()=>{let r=Math.random()*tot,i=0;while((r-=w[i])>0&&i<w.length-1)i++;return i};
  const set=Array.from({length:3},()=>mk(pick()));
@@ -176,26 +216,32 @@ function renderTray(){
  select(sel);
 }
 function hud(){const s=$('score');if(s.textContent!==String(score)){s.textContent=score;s.classList.remove('bump');void s.offsetWidth;s.classList.add('bump')}$('best').textContent=best;$('combo').textContent=streak?'x'+streak+(comboGraceUsed?' · em risco':''):'–';
+ const share=$('share-daily');
+ share.hidden=!dailyDate||!best;
+ if(!share.hidden)share.href=shareDaily(best);
  $('undo').textContent=`Desfazer (${undos})`;$('undo').disabled=!snap||!undos||busy}
-function save(){try{localStorage.setItem(KEY,JSON.stringify({grid,pieces:pieces.map(p=>p&&{s:p.s,c:p.color}),score,streak,comboGraceUsed,undos,record}))}catch{}}
+function save(){try{localStorage.setItem(stateKey(),JSON.stringify({grid,pieces:pieces.map(p=>p&&{s:p.s,c:p.color}),score,streak,comboGraceUsed,undos,record,dailyRound}))}catch{}}
 function load(){
- try{const s=JSON.parse(localStorage.getItem(KEY));
+ try{const s=JSON.parse(localStorage.getItem(stateKey()));
   if(!s||!Array.isArray(s.grid)||s.grid.length!==SZ||!Array.isArray(s.pieces)||s.pieces.length!==3)return false;
   if(!s.grid.every(c=>c===null||colors.includes(c)))return false;
   if(!s.pieces.every(p=>p===null||(Number.isInteger(p.s)&&SHAPES[p.s]&&colors.includes(p.c))))return false;
   grid=s.grid;pieces=s.pieces.map(p=>p&&mk(p.s,p.c));score=Number(s.score)||0;streak=Number(s.streak)||0;comboGraceUsed=streak>0&&s.comboGraceUsed===true;
   undos=Math.min(3,Number(s.undos)||0);record=!!s.record;snap=null;sel=pieces.findIndex(Boolean);
-  if(sel<0)return false;return true}catch{return false}
+  if(sel<0)return false;dailyRound=Number.isSafeInteger(s.dailyRound)&&s.dailyRound>0?s.dailyRound:1;return true}catch{return false}
 }
 function check(){if(!pieces.some(p=>p&&anyFit(p.cells))){
- try{localStorage.removeItem(KEY)}catch{}
+ try{localStorage.removeItem(stateKey())}catch{}
  $('result').textContent=`Você fez ${score} pontos.`+(record&&score>0?' Novo recorde!':'');
+ const share=$('share-result');
+ share.hidden=!dailyDate||!score;
+ if(!share.hidden)share.href=shareDaily(score);
  $('undo2').hidden=!(snap&&undos);buzz([60,40,60]);tone(330,.22,'triangle',.12);tone(262,.22,'triangle',.12,.2);tone(196,.4,'triangle',.14,.4);end.showModal()}}
 function place(x,y){
  if(busy)return;const p=pieces[sel];
  if(!p){say('Escolha uma das peças abaixo.');return}
  if(!fits(p.cells,x,y)){say('A peça não cabe aqui.');buzz(30);tone(140,.15,'sawtooth',.06);return}
- snap={grid:[...grid],pieces:[...pieces],score,streak,comboGraceUsed,sel};
+ snap={grid:[...grid],pieces:[...pieces],score,streak,comboGraceUsed,sel,dailyRound};
  for(const[dx,dy]of p.cells)grid[(y+dy)*N+x+dx]=p.color;
  const complete=completedLines(),lines=complete.length,clear=new Set(complete.flat());
  pieces[sel]=null;
@@ -206,7 +252,7 @@ function place(x,y){
  let gain=p.cells.length;if(lines)gain+=Math.round(10*lines*lines*(1+.5*(streak-1)));
  const perfect=lines>0&&grid.every((c,i)=>!c||clear.has(i));if(perfect)gain+=60;
  score+=gain;
- if(score>best){best=score;record=true;try{localStorage.setItem(BK,String(best))}catch{}}
+ if(score>best){best=score;record=true;try{localStorage.setItem(bestKey(),String(best))}catch{}}
  say(lines?`${perfect?'Tabuleiro limpo! ':''}${lines>1?lines+' linhas!':'Linha limpa!'}${streak>1?' Combo x'+streak:''} +${gain}`:comboEnded?'Combo encerrado.':comboGraceUsed?'Limpe uma linha ou coluna na próxima jogada para manter o combo.':'');
  busy=true;sel=-1;paint();clear.forEach(i=>tiles[i].classList.add('pop'));buzz(lines?[20,30,40]:10);hud();if(lines)floatText(`+${gain}`);sfxPlace(lines,perfect);
  setTimeout(()=>{
@@ -265,12 +311,15 @@ function floatText(t){
 }
 function undo(){
  if(busy||!snap||!undos)return;
- ({grid,pieces,score,streak,comboGraceUsed,sel}=snap);snap=null;undos--;record=score>=best&&score>0?record:record;
+ ({grid,pieces,score,streak,comboGraceUsed,sel,dailyRound}=snap);snap=null;undos--;record=score>=best&&score>0?record:record;
  say('Jogada desfeita.');tone(420,.07,'triangle',.1);tone(320,.09,'triangle',.1,.07);hud();paint();renderTray();save();
 }
 function start(){
+ if(busy)return;
  if(end.open)end.close();
- grid=Array(SZ).fill(null);pieces=deal();sel=0;score=0;streak=0;comboGraceUsed=false;undos=3;snap=null;busy=false;drag=null;record=false;
+ if(dailyDate&&dailyDate!==today()){openMode(true);return}
+ dailyRound=0;
+ grid=dailyDate?dailyGrid():Array(SZ).fill(null);pieces=deal();sel=0;score=0;streak=0;comboGraceUsed=false;undos=3;snap=null;busy=false;drag=null;record=false;
  ghost.hidden=true;say('Escolha uma peça e arraste para o tabuleiro.');hud();paint();renderTray();save();
 }
 /* arrastar */
@@ -331,7 +380,26 @@ resetBtn.addEventListener('click',()=>{
  resetBtn.dataset.c=1;resetBtn.textContent='Confirmar?';
  rt=setTimeout(()=>{delete resetBtn.dataset.c;resetBtn.textContent='Reiniciar'},2500);
 });
-if(load()){say('Partida retomada.');hud();paint();renderTray();check()}else start();
+function openMode(daily){
+ if(busy||drag)return;
+ if(end.open)end.close();
+ clearTimeout(rt);delete resetBtn.dataset.c;resetBtn.textContent='Reiniciar';
+ dailyDate=daily?today():'';
+ best=0;
+ try{best=Number(localStorage.getItem(bestKey()))||0}catch{}
+ $('classic').setAttribute('aria-pressed',String(!daily));
+ $('daily').setAttribute('aria-pressed',String(daily));
+ const date=$('daily-date');
+ date.hidden=!daily;
+ date.textContent=daily?dateLabel(dailyDate)+' · Horário de Brasília':'';
+ if(location.protocol.startsWith('http')){
+  try{history.replaceState(null,'',daily?'#desafio':location.pathname+location.search)}catch{}
+ }
+ if(load()){say('Partida retomada.');hud();paint();renderTray();check()}else start();
+}
+$('daily').addEventListener('click',()=>{if(dailyDate!==today())openMode(true)});
+$('classic').addEventListener('click',()=>{if(dailyDate)openMode(false)});
+openMode(location.hash==='#desafio');
 muteUI();
 let seen=false;try{seen=localStorage.getItem('blocos-neon-ajuda')==='1'}catch{}
 if(!seen&&!end.open)help.showModal();
