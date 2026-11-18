@@ -61,7 +61,7 @@ p{text-align:center;color:var(--muted);font-size:13px;margin:10px 0 0}
 .shape{display:grid;gap:var(--gap,0);pointer-events:none;filter:drop-shadow(5px 5px 0 #0006)}
 .shape .gem{width:var(--g,clamp(14px,4.8vw,24px))}
 #ghost{position:fixed;left:0;top:0;z-index:30;pointer-events:none;filter:drop-shadow(0 8px 10px #0006)}
-#ghost .shape{filter:none}
+#ghost .shape{filter:none;opacity:.65}
 #ghost[hidden]{display:none}
 .bar{display:flex;justify-content:center;gap:12px;margin-top:14px}
 .btn{border:0;background:var(--btn);border-radius:999px;padding:10px 20px;font-size:14px;font-weight:700;transition:transform .12s,background .2s}
@@ -110,8 +110,8 @@ dialog .btn{margin:6px 4px 0}
 <li>Quando as 3 peças acabam, vêm 3 novas. O jogo termina quando nenhuma peça cabe.</li></ul>
 <h3>Pontos</h3>
 <ul><li>1 ponto por bloco colocado.</li>
-<li>Linhas limpas valem 10 × linhas²: 2 de uma vez dão 40, 3 dão 90.</li>
-<li>Combo: cada nova limpeza no combo soma +50% ao bônus. Uma jogada sem limpar mantém o combo. Duas seguidas encerram a sequência.</li>
+<li>Limpar 1, 2 ou 3 linhas ou colunas de uma vez dá 100, 300 ou 600 pontos.</li>
+<li>Combo: limpe em três jogadas seguidas para ativar x2. Cada nova limpeza aumenta o multiplicador em 0,5. Uma jogada sem limpar mantém o combo ativo. Duas seguidas encerram a sequência.</li>
 <li>Tabuleiro totalmente vazio: +60.</li></ul>
 <h3>Dicas</h3>
 <ul><li>O brilho dourado mostra o que será limpo antes de soltar a peça.</li>
@@ -137,11 +137,12 @@ const board=$('board'),tray=$('tray'),end=$('end'),ghost=$('ghost'),resetBtn=$('
 const tiles=Array.from({length:SZ},(_,i)=>{const t=document.createElement('button');t.className='cell';t.dataset.i=i;t.tabIndex=i?-1:0;
  t.setAttribute('aria-label',`Linha ${1+(i/N|0)}, coluna ${1+i%N}`);board.append(t);return t});
 let grid,pieces,sel=-1,score=0,streak=0,comboGraceUsed=false,undos=3,snap=null,busy=false,drag=null,record=false,best=0,rt;
-let dailyDate='',dailyRound=0;
+let dailyDate='',dailyRound=0,bag=[];
+const SMALL_PIECES=[0,1,2], MERCY_THRESHOLD=Math.ceil(SZ*.8);
 const today=()=>new Intl.DateTimeFormat('sv-SE',{timeZone:'America/Sao_Paulo'}).format(new Date());
 const dateLabel=date=>date.split('-').reverse().join('/');
-const stateKey=()=>dailyDate?KEY+'-dia-'+dailyDate:KEY;
-const bestKey=()=>dailyDate?BK+'-dia-'+dailyDate:BK;
+const stateKey=()=>dailyDate?KEY+'-dia-v2-'+dailyDate:KEY;
+const bestKey=()=>dailyDate?BK+'-dia-v2-'+dailyDate:BK;
 function dailyRandom(round){
  let seed=(Math.imul(Number(dailyDate.replace(/-/g,'')),2654435761)^Math.imul(round,2246822519))>>>0;
  return max=>{
@@ -170,16 +171,35 @@ const buzz=p=>{try{navigator.vibrate&&navigator.vibrate(p)}catch{}};
 const mk=(s,c)=>({s,color:c||colors[Math.random()*colors.length|0],...SHAPES[s]});
 const fits=(cells,x,y)=>cells.every(([dx,dy])=>{const X=x+dx,Y=y+dy;return X>=0&&X<N&&Y>=0&&Y<N&&!grid[Y*N+X]});
 function anyFit(cells){for(let y=0;y<N;y++)for(let x=0;x<N;x++)if(fits(cells,x,y))return true;return false}
-function deal(){
- if(dailyDate){
-  const pick=dailyRandom(++dailyRound);
-  return [3,11,0].map(fallback=>mk(dailyRound===1?fallback:pick(SHAPES.length),colors[pick(colors.length)]));
+function refillBag(pick){
+ bag=SHAPES.map((_,i)=>i);
+ for(let i=bag.length-1;i>0;i--){
+  const j=pick(i+1);
+  [bag[i],bag[j]]=[bag[j],bag[i]];
  }
- const f=grid.filter(Boolean).length/SZ,w=SHAPES.map(s=>Math.exp(-f*s.cells.length*.28)),tot=w.reduce((a,b)=>a+b);
- const pick=()=>{let r=Math.random()*tot,i=0;while((r-=w[i])>0&&i<w.length-1)i++;return i};
- const set=Array.from({length:3},()=>mk(pick()));
- if(!set.some(p=>anyFit(p.cells))){const ok=SHAPES.map((_,i)=>i).filter(i=>anyFit(SHAPES[i].cells));if(ok.length)set[0]=mk(ok[Math.random()*ok.length|0])}
- return set;
+}
+function deal(){
+ const pick=dailyDate?dailyRandom(++dailyRound):max=>Math.floor(Math.random()*max);
+ const mercy=grid.filter(Boolean).length>=MERCY_THRESHOLD;
+ return Array.from({length:3},(_,slot)=>{
+  if(!bag.length)refillBag(pick);
+  let index=0;
+  if(dailyDate&&dailyRound===1&&slot===0)index=bag.indexOf(3);
+  else if(mercy){
+   const rescue=bag.findIndex(i=>SMALL_PIECES.includes(i)&&anyFit(SHAPES[i].cells));
+   if(rescue>=0)index=rescue;
+  }
+  const [shape]=bag.splice(index,1);
+  return mk(shape,colors[pick(colors.length)]);
+ });
+}
+const comboMultiplier=()=>streak>=3?1+(streak-1)*.5:1;
+function updateCombo(lines){
+ if(lines){streak++;comboGraceUsed=false;return false}
+ if(streak>=3&&!comboGraceUsed){comboGraceUsed=true;return false}
+ const ended=streak>=3;
+ streak=0;comboGraceUsed=false;
+ return ended;
 }
 function geom(){const r=board.getBoundingClientRect(),pad=parseFloat(getComputedStyle(board).paddingLeft)||7,size=board.clientWidth-2*pad;
  return{left:r.left+board.clientLeft+pad,top:r.top+board.clientTop+pad,step:(size+2)/N}}
@@ -215,18 +235,19 @@ function renderTray(){
   b.setAttribute('aria-label',p?`Peça ${i+1}, ${p.cells.length} blocos`:`Peça ${i+1} usada`);if(p)b.append(shapeEl(p));return b}));
  select(sel);
 }
-function hud(){const s=$('score');if(s.textContent!==String(score)){s.textContent=score;s.classList.remove('bump');void s.offsetWidth;s.classList.add('bump')}$('best').textContent=best;$('combo').textContent=streak?'x'+streak+(comboGraceUsed?' · em risco':''):'–';
+function hud(){const s=$('score');if(s.textContent!==String(score)){s.textContent=score;s.classList.remove('bump');void s.offsetWidth;s.classList.add('bump')}$('best').textContent=best;$('combo').textContent=streak>=3?'x'+comboMultiplier()+(comboGraceUsed?' · em risco':''):'–';
  const share=$('share-daily');
  share.hidden=!dailyDate||!best;
  if(!share.hidden)share.href=shareDaily(best);
  $('undo').textContent=`Desfazer (${undos})`;$('undo').disabled=!snap||!undos||busy}
-function save(){try{localStorage.setItem(stateKey(),JSON.stringify({grid,pieces:pieces.map(p=>p&&{s:p.s,c:p.color}),score,streak,comboGraceUsed,undos,record,dailyRound}))}catch{}}
+function save(){try{localStorage.setItem(stateKey(),JSON.stringify({grid,pieces:pieces.map(p=>p&&{s:p.s,c:p.color}),score,streak,comboGraceUsed,undos,record,dailyRound,bag,rules:2}))}catch{}}
 function load(){
  try{const s=JSON.parse(localStorage.getItem(stateKey()));
   if(!s||!Array.isArray(s.grid)||s.grid.length!==SZ||!Array.isArray(s.pieces)||s.pieces.length!==3)return false;
   if(!s.grid.every(c=>c===null||colors.includes(c)))return false;
   if(!s.pieces.every(p=>p===null||(Number.isInteger(p.s)&&SHAPES[p.s]&&colors.includes(p.c))))return false;
-  grid=s.grid;pieces=s.pieces.map(p=>p&&mk(p.s,p.c));score=Number(s.score)||0;streak=Number(s.streak)||0;comboGraceUsed=streak>0&&s.comboGraceUsed===true;
+  grid=s.grid;pieces=s.pieces.map(p=>p&&mk(p.s,p.c));score=Number(s.score)||0;streak=s.rules===2?Number(s.streak)||0:0;comboGraceUsed=streak>=3&&s.comboGraceUsed===true;
+  bag=Array.isArray(s.bag)&&new Set(s.bag).size===s.bag.length&&s.bag.every(i=>Number.isInteger(i)&&SHAPES[i])?s.bag:[];
   undos=Math.min(3,Number(s.undos)||0);record=!!s.record;snap=null;sel=pieces.findIndex(Boolean);
   if(sel<0)return false;dailyRound=Number.isSafeInteger(s.dailyRound)&&s.dailyRound>0?s.dailyRound:1;return true}catch{return false}
 }
@@ -241,29 +262,34 @@ function place(x,y){
  if(busy)return;const p=pieces[sel];
  if(!p){say('Escolha uma das peças abaixo.');return}
  if(!fits(p.cells,x,y)){say('A peça não cabe aqui.');buzz(30);tone(140,.15,'sawtooth',.06);return}
- snap={grid:[...grid],pieces:[...pieces],score,streak,comboGraceUsed,sel,dailyRound};
+ snap={grid:[...grid],pieces:[...pieces],score,streak,comboGraceUsed,sel,dailyRound,bag:[...bag]};
  for(const[dx,dy]of p.cells)grid[(y+dy)*N+x+dx]=p.color;
  const complete=completedLines(),lines=complete.length,clear=new Set(complete.flat());
  pieces[sel]=null;
- const comboEnded=!lines&&comboGraceUsed;
- if(lines){streak++;comboGraceUsed=false}
- else if(comboEnded){streak=0;comboGraceUsed=false}
- else if(streak)comboGraceUsed=true;
- let gain=p.cells.length;if(lines)gain+=Math.round(10*lines*lines*(1+.5*(streak-1)));
+ const wasCombo=streak>=3;
+ const comboEnded=updateCombo(lines);
+ let gain=p.cells.length+Math.round(100*lines*(lines+1)/2*comboMultiplier());
  const perfect=lines>0&&grid.every((c,i)=>!c||clear.has(i));if(perfect)gain+=60;
  score+=gain;
  if(score>best){best=score;record=true;try{localStorage.setItem(bestKey(),String(best))}catch{}}
- say(lines?`${perfect?'Tabuleiro limpo! ':''}${lines>1?lines+' linhas!':'Linha limpa!'}${streak>1?' Combo x'+streak:''} +${gain}`:comboEnded?'Combo encerrado.':comboGraceUsed?'Limpe uma linha ou coluna na próxima jogada para manter o combo.':'');
- busy=true;sel=-1;paint();clear.forEach(i=>tiles[i].classList.add('pop'));buzz(lines?[20,30,40]:10);hud();if(lines)floatText(`+${gain}`);sfxPlace(lines,perfect);
- setTimeout(()=>{
-  if(lines)burst([...clear]);clear.forEach(i=>grid[i]=null);
+ say(lines?`${perfect?'Tabuleiro limpo! ':''}${lines>1?lines+' linhas!':'Linha limpa!'}${streak>=3?(wasCombo?' Combo x':' Combo ativado! x')+comboMultiplier():''} +${gain}`:comboEnded?'Combo encerrado.':comboGraceUsed?'Limpe uma linha ou coluna na próxima jogada para manter o combo.':'');
+ busy=true;sel=-1;paint();buzz(lines?[12,45,24]:10);hud();
+ const finish=()=>{
+  clear.forEach(i=>grid[i]=null);
   if(!pieces.some(Boolean))pieces=deal();
   sel=pieces.findIndex(Boolean);busy=false;
   hud();paint();renderTray();save();check();
- },lines&&!RM.matches?260:0);
+ };
+ if(!lines){sfxPlace(0,false);finish();return}
+ const hit=()=>{
+  clear.forEach(i=>tiles[i].classList.add('pop'));
+  burst(clear);floatText(`+${gain}`);sfxPlace(lines,perfect);
+  if(RM.matches)finish();else setTimeout(finish,260);
+ };
+ if(RM.matches)hit();else setTimeout(hit,50);
 }
 /* som */
-let muted=false,AC;const PENT=[0,2,4,7,9,12,14,16];
+let muted=false,AC;const SCALE=[0,2,4,5,7,9,11,12,14,16,17,19];
 try{muted=localStorage.getItem('blocos-neon-mudo')==='1'}catch{}
 function tone(f,d=.12,type='sine',v=.12,at=0){
  if(muted)return;
@@ -275,7 +301,8 @@ function tone(f,d=.12,type='sine',v=.12,at=0){
 function sfxPlace(lines,perfect){
  if(!lines){tone(240,.09,'triangle',.12);return}
  tone(240,.06,'triangle',.1);
- for(let i=0;i<Math.min(2+lines,6);i++)tone(392*2**(PENT[Math.min(streak-1+i,7)]/12),.2,'sine',.12,.05+i*.07);
+ const step=streak>=3?Math.min(streak-2,7):0;
+ for(let i=0;i<Math.min(2+lines,5);i++)tone(523*2**(SCALE[step+i]/12),.2,'sine',.12,.03+i*.06);
  if(perfect)[0,4,7,12].forEach((s,i)=>tone(523*2**(s/12),.5,'triangle',.1,.1+i*.05));
 }
 function muteUI(){const b=$('mute');b.textContent=muted?'🔇':'🔊';b.setAttribute('aria-pressed',String(!muted));b.setAttribute('aria-label',muted?'Ativar som':'Desativar som')}
@@ -311,14 +338,14 @@ function floatText(t){
 }
 function undo(){
  if(busy||!snap||!undos)return;
- ({grid,pieces,score,streak,comboGraceUsed,sel,dailyRound}=snap);snap=null;undos--;record=score>=best&&score>0?record:record;
+ ({grid,pieces,score,streak,comboGraceUsed,sel,dailyRound,bag}=snap);snap=null;undos--;record=score>=best&&score>0?record:record;
  say('Jogada desfeita.');tone(420,.07,'triangle',.1);tone(320,.09,'triangle',.1,.07);hud();paint();renderTray();save();
 }
 function start(){
  if(busy)return;
  if(end.open)end.close();
  if(dailyDate&&dailyDate!==today()){openMode(true);return}
- dailyRound=0;
+ dailyRound=0;bag=[];
  grid=dailyDate?dailyGrid():Array(SZ).fill(null);pieces=deal();sel=0;score=0;streak=0;comboGraceUsed=false;undos=3;snap=null;busy=false;drag=null;record=false;
  ghost.hidden=true;say('Escolha uma peça e arraste para o tabuleiro.');hud();paint();renderTray();save();
 }
@@ -334,7 +361,7 @@ tray.addEventListener('pointermove',e=>{
  if(!drag||drag.id!==e.pointerId)return;const p=pieces[drag.i];
  if(!drag.moved&&Math.hypot(e.clientX-drag.x,e.clientY-drag.y)>6){drag.moved=true;drag.slot.classList.add('drag');ghost.replaceChildren(shapeEl(p,geom().step-2));ghost.hidden=false}
  if(drag.moved){
-  const a=aim(p,e),snapToGrid=e.pointerType==='touch'&&a.valid;
+  const a=aim(p,e),snapToGrid=a.valid;
   const left=snapToGrid?a.left+a.x*a.step:a.tlx,top=snapToGrid?a.top+a.y*a.step:a.tly;
   ghost.style.transform=`translate(${left}px,${top}px)`;
   paint(a.x,a.y);
