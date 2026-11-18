@@ -44,7 +44,7 @@ p{text-align:center;color:var(--muted);font-size:13px;margin:10px 0 0}
 .gem,.filled{--c:var(--color);background:linear-gradient(color-mix(in srgb,var(--c),#fff 10%),color-mix(in srgb,var(--c),#000 8%)) center/74% 74% no-repeat,conic-gradient(from -45deg,color-mix(in srgb,var(--c),#fff 32%) 0 25%,color-mix(in srgb,var(--c),#000 26%) 0 50%,color-mix(in srgb,var(--c),#000 42%) 0 75%,color-mix(in srgb,var(--c),#fff 12%) 0)}
 .valid{background:color-mix(in srgb,var(--color,#fff) 42%,var(--cell))}
 .invalid{outline:2px solid var(--bad);outline-offset:-2px}
-.will{outline:2px solid var(--gold);outline-offset:-2px;filter:brightness(1.3)}
+.will{outline:2px solid var(--gold);outline-offset:-2px;box-shadow:inset 0 0 10px #ffe87690;filter:brightness(1.35)}
 .filled:not(.pop){animation:drop .18s ease-out}
 @keyframes drop{from{transform:scale(.6);opacity:.4}}
 .pop{animation:pop .26s ease-in forwards}
@@ -102,7 +102,7 @@ dialog .btn{margin:6px 4px 0}
 <h3>Pontos</h3>
 <ul><li>1 ponto por bloco colocado.</li>
 <li>Linhas limpas valem 10 × linhas²: 2 de uma vez dão 40, 3 dão 90.</li>
-<li>Combo: limpar linhas em jogadas seguidas soma +50% ao bônus a cada jogada.</li>
+<li>Combo: cada nova limpeza no combo soma +50% ao bônus. Uma jogada sem limpar mantém o combo. Duas seguidas encerram a sequência.</li>
 <li>Tabuleiro totalmente vazio: +60.</li></ul>
 <h3>Dicas</h3>
 <ul><li>O brilho dourado mostra o que será limpo antes de soltar a peça.</li>
@@ -127,7 +127,7 @@ const $=id=>document.getElementById(id),RM=matchMedia('(prefers-reduced-motion: 
 const board=$('board'),tray=$('tray'),end=$('end'),ghost=$('ghost'),resetBtn=$('reset');
 const tiles=Array.from({length:SZ},(_,i)=>{const t=document.createElement('button');t.className='cell';t.dataset.i=i;t.tabIndex=i?-1:0;
  t.setAttribute('aria-label',`Linha ${1+(i/N|0)}, coluna ${1+i%N}`);board.append(t);return t});
-let grid,pieces,sel=-1,score=0,streak=0,undos=3,snap=null,busy=false,drag=null,record=false,best=0,rt;
+let grid,pieces,sel=-1,score=0,streak=0,comboGraceUsed=false,undos=3,snap=null,busy=false,drag=null,record=false,best=0,rt;
 try{best=Number(localStorage.getItem(BK))||0}catch{}
 const say=t=>{$('status').textContent=t};
 const buzz=p=>{try{navigator.vibrate&&navigator.vibrate(p)}catch{}};
@@ -145,13 +145,26 @@ function geom(){const r=board.getBoundingClientRect(),pad=parseFloat(getComputed
  return{left:r.left+board.clientLeft+pad,top:r.top+board.clientTop+pad,step:(size+2)/N}}
 function aim(p,e){const g=geom(),off=e.pointerType==='mouse'?0:Math.min(70,g.step*1.6),
  tlx=e.clientX-(p.w*g.step-2)/2,tly=e.clientY-off-(p.h*g.step-2)/2;
- return{x:Math.round((tlx-g.left)/g.step),y:Math.round((tly-g.top)/g.step),tlx,tly}}
+ const target=nearestFit(p,(tlx-g.left)/g.step,(tly-g.top)/g.step,e.pointerType==='touch');
+ return{...target,tlx,tly,step:g.step,left:g.left,top:g.top};
+}
+function nearestFit(p,column,row,assist){
+ const x=Math.round(column),y=Math.round(row),exact=fits(p.cells,x,y);
+ if(exact||!assist)return{x,y,valid:exact};
+ let best={x,y,valid:false},distance=.85;
+ for(let Y=y-1;Y<=y+1;Y++)for(let X=x-1;X<=x+1;X++){
+  const offset=Math.hypot(X-column,Y-row);
+  if(offset<distance&&fits(p.cells,X,Y)){distance=offset;best={x:X,y:Y,valid:true}}
+ }
+ return best;
+}
+const completedLines=preview=>LINES.filter(line=>line.every(i=>grid[i]||preview?.has(i)));
 const origin=(i,p)=>[i%N-((p.w-1)>>1),(i/N|0)-((p.h-1)>>1)];
 function paint(x,y){
  const p=pieces[sel],pre=new Set(),will=new Set();let ok=false;
  if(p&&x!==undefined){ok=fits(p.cells,x,y);
   for(const[dx,dy]of p.cells){const X=x+dx,Y=y+dy;if(X>=0&&X<N&&Y>=0&&Y<N)pre.add(Y*N+X)}
-  if(ok)for(const L of LINES)if(L.every(i=>grid[i]||pre.has(i)))L.forEach(i=>will.add(i));}
+  if(ok)for(const line of completedLines(pre))line.forEach(i=>will.add(i));}
  tiles.forEach((t,i)=>{t.className='cell'+(grid[i]?' filled':'')+(pre.has(i)?(ok?' valid':' invalid'):'')+(will.has(i)?' will':'');t.style.setProperty('--color',grid[i]||(ok&&pre.has(i)?p.color:''))});
 }
 function select(i){sel=i;[...tray.children].forEach((s,j)=>{s.classList.toggle('selected',i===j);s.setAttribute('aria-pressed',String(i===j))})}
@@ -162,15 +175,15 @@ function renderTray(){
   b.setAttribute('aria-label',p?`Peça ${i+1}, ${p.cells.length} blocos`:`Peça ${i+1} usada`);if(p)b.append(shapeEl(p));return b}));
  select(sel);
 }
-function hud(){const s=$('score');if(s.textContent!==String(score)){s.textContent=score;s.classList.remove('bump');void s.offsetWidth;s.classList.add('bump')}$('best').textContent=best;$('combo').textContent=streak>1?'x'+streak:'–';
+function hud(){const s=$('score');if(s.textContent!==String(score)){s.textContent=score;s.classList.remove('bump');void s.offsetWidth;s.classList.add('bump')}$('best').textContent=best;$('combo').textContent=streak?'x'+streak+(comboGraceUsed?' · em risco':''):'–';
  $('undo').textContent=`Desfazer (${undos})`;$('undo').disabled=!snap||!undos||busy}
-function save(){try{localStorage.setItem(KEY,JSON.stringify({grid,pieces:pieces.map(p=>p&&{s:p.s,c:p.color}),score,streak,undos,record}))}catch{}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify({grid,pieces:pieces.map(p=>p&&{s:p.s,c:p.color}),score,streak,comboGraceUsed,undos,record}))}catch{}}
 function load(){
  try{const s=JSON.parse(localStorage.getItem(KEY));
   if(!s||!Array.isArray(s.grid)||s.grid.length!==SZ||!Array.isArray(s.pieces)||s.pieces.length!==3)return false;
   if(!s.grid.every(c=>c===null||colors.includes(c)))return false;
   if(!s.pieces.every(p=>p===null||(Number.isInteger(p.s)&&SHAPES[p.s]&&colors.includes(p.c))))return false;
-  grid=s.grid;pieces=s.pieces.map(p=>p&&mk(p.s,p.c));score=Number(s.score)||0;streak=Number(s.streak)||0;
+  grid=s.grid;pieces=s.pieces.map(p=>p&&mk(p.s,p.c));score=Number(s.score)||0;streak=Number(s.streak)||0;comboGraceUsed=streak>0&&s.comboGraceUsed===true;
   undos=Math.min(3,Number(s.undos)||0);record=!!s.record;snap=null;sel=pieces.findIndex(Boolean);
   if(sel<0)return false;return true}catch{return false}
 }
@@ -182,16 +195,19 @@ function place(x,y){
  if(busy)return;const p=pieces[sel];
  if(!p){say('Escolha uma das peças abaixo.');return}
  if(!fits(p.cells,x,y)){say('A peça não cabe aqui.');buzz(30);tone(140,.15,'sawtooth',.06);return}
- snap={grid:[...grid],pieces:[...pieces],score,streak,sel};
+ snap={grid:[...grid],pieces:[...pieces],score,streak,comboGraceUsed,sel};
  for(const[dx,dy]of p.cells)grid[(y+dy)*N+x+dx]=p.color;
- const clear=new Set();let lines=0;
- for(const L of LINES)if(L.every(i=>grid[i])){lines++;L.forEach(i=>clear.add(i))}
- pieces[sel]=null;streak=lines?streak+1:0;
+ const complete=completedLines(),lines=complete.length,clear=new Set(complete.flat());
+ pieces[sel]=null;
+ const comboEnded=!lines&&comboGraceUsed;
+ if(lines){streak++;comboGraceUsed=false}
+ else if(comboEnded){streak=0;comboGraceUsed=false}
+ else if(streak)comboGraceUsed=true;
  let gain=p.cells.length;if(lines)gain+=Math.round(10*lines*lines*(1+.5*(streak-1)));
  const perfect=lines>0&&grid.every((c,i)=>!c||clear.has(i));if(perfect)gain+=60;
  score+=gain;
  if(score>best){best=score;record=true;try{localStorage.setItem(BK,String(best))}catch{}}
- say(lines?`${perfect?'Tabuleiro limpo! ':''}${lines>1?lines+' linhas!':'Linha limpa!'}${streak>1?' Combo x'+streak:''} +${gain}`:'');
+ say(lines?`${perfect?'Tabuleiro limpo! ':''}${lines>1?lines+' linhas!':'Linha limpa!'}${streak>1?' Combo x'+streak:''} +${gain}`:comboEnded?'Combo encerrado.':comboGraceUsed?'Limpe uma linha ou coluna na próxima jogada para manter o combo.':'');
  busy=true;sel=-1;paint();clear.forEach(i=>tiles[i].classList.add('pop'));buzz(lines?[20,30,40]:10);hud();if(lines)floatText(`+${gain}`);sfxPlace(lines,perfect);
  setTimeout(()=>{
   if(lines)burst([...clear]);clear.forEach(i=>grid[i]=null);
@@ -249,12 +265,12 @@ function floatText(t){
 }
 function undo(){
  if(busy||!snap||!undos)return;
- ({grid,pieces,score,streak,sel}=snap);snap=null;undos--;record=score>=best&&score>0?record:record;
+ ({grid,pieces,score,streak,comboGraceUsed,sel}=snap);snap=null;undos--;record=score>=best&&score>0?record:record;
  say('Jogada desfeita.');tone(420,.07,'triangle',.1);tone(320,.09,'triangle',.1,.07);hud();paint();renderTray();save();
 }
 function start(){
  if(end.open)end.close();
- grid=Array(SZ).fill(null);pieces=deal();sel=0;score=0;streak=0;undos=3;snap=null;busy=false;drag=null;record=false;
+ grid=Array(SZ).fill(null);pieces=deal();sel=0;score=0;streak=0;comboGraceUsed=false;undos=3;snap=null;busy=false;drag=null;record=false;
  ghost.hidden=true;say('Escolha uma peça e arraste para o tabuleiro.');hud();paint();renderTray();save();
 }
 /* arrastar */
@@ -268,14 +284,19 @@ tray.addEventListener('pointerdown',e=>{
 tray.addEventListener('pointermove',e=>{
  if(!drag||drag.id!==e.pointerId)return;const p=pieces[drag.i];
  if(!drag.moved&&Math.hypot(e.clientX-drag.x,e.clientY-drag.y)>6){drag.moved=true;drag.slot.classList.add('drag');ghost.replaceChildren(shapeEl(p,geom().step-2));ghost.hidden=false}
- if(drag.moved){const a=aim(p,e);ghost.style.transform=`translate(${a.tlx}px,${a.tly}px)`;paint(a.x,a.y)}
+ if(drag.moved){
+  const a=aim(p,e),snapToGrid=e.pointerType==='touch'&&a.valid;
+  const left=snapToGrid?a.left+a.x*a.step:a.tlx,top=snapToGrid?a.top+a.y*a.step:a.tly;
+  ghost.style.transform=`translate(${left}px,${top}px)`;
+  paint(a.x,a.y);
+ }
 });
 tray.addEventListener('pointerup',e=>{
  if(!drag||drag.id!==e.pointerId)return;
  const d=drag,p=pieces[d.i];endDrag();
  if(!d.moved)return;
  const a=aim(p,e);paint();
- if(p.cells.some(([dx,dy])=>{const X=a.x+dx,Y=a.y+dy;return X>=0&&X<N&&Y>=0&&Y<N}))place(a.x,a.y);
+ if(a.valid||p.cells.some(([dx,dy])=>{const X=a.x+dx,Y=a.y+dy;return X>=0&&X<N&&Y>=0&&Y<N}))place(a.x,a.y);
 });
 tray.addEventListener('pointercancel',()=>{endDrag();paint()});
 tray.addEventListener('click',e=>{const s=e.target.closest('.slot');if(s&&!s.disabled&&!busy)select(+s.dataset.i)});
